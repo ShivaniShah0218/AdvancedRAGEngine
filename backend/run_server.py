@@ -119,7 +119,20 @@ def main():
     
     # Run initialization
     ensure_initialization()
+
+    #Check for embedding models download
+    logger.info(f"Checking for embeddings model")
+    from backend.embedding_model.model_download_check import ensure_model as embedding_model_ensure
+    embedding_model_ensure()
+    logger.info(f"Embeddings model download checked")
+
+    #Check for chromadb persistent storage directory created
+    logger.info(f"Checking for Chromadb persistent directory")
+    from backend.knowledge_database.chroma_client import initialize_kb_storage
+    initialize_kb_storage()    
+    logger.info(f"Chromadb persistent directory checked")
     
+    logger.info("All pre-start checks passed")
     # Start uvicorn server
     logger.info("Starting Uvicorn server...")
     logger.info(f"📍 API available at: http://{args.host}:{args.port}")

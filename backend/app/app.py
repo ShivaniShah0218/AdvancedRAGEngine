@@ -9,26 +9,38 @@
     - Comprehensive error handling with appropriate HTTP status codes and logging for all failure scenarios
 """
 #Import necessary libraries
+import uuid
+import shutil
+import tempfile
+import asyncio
 import time
 import os
-from fastapi import FastAPI, Depends, HTTPException, status, Path, Body
+import json
+from fastapi import FastAPI, Depends, HTTPException, status, Path, Body, UploadFile, File
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from typing import List,Dict
 from jose import jwt, JWTError
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from celery.result import AsyncResult
+
 
 from starlette.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
-
+from .metrics import (
+    REQUEST_COUNT, REQUEST_LATENCY, LOGIN_ATTEMPTS,
+    increment_document_upload, observe_document_size, increment_document_deletion,
+    increment_kb_audit, increment_embedding_creation, observe_embedding_duration
+)
+from backend.app import schemas
+from backend.logging_config import get_logger
+from backend.worker.celery_worker import celery_app  # noqa: ensures app is configured before task import
+from backend.worker.tasks import ingest_document
 from backend.db.database_config import engine,Base, get_db
 from backend.db import models as db_models
 from backend.db import utils as db_utils
-from backend.app import schemas
-from .metrics import REQUEST_COUNT, REQUEST_LATENCY, LOGIN_ATTEMPTS
-from backend.logging_config import get_logger
-
+from backend.utils.mcp_client import call_mcp_tool
 load_dotenv()
 
 logger = get_logger(__name__)
@@ -36,6 +48,8 @@ logger = get_logger(__name__)
 SECRET_KEY = os.getenv("JWT_SECRET", "replace-this-secret")
 ACCESS_TOKEN_EXPIRE_SECONDS = int(os.getenv("JWT_EXPIRE_S", 3600))
 ALGORITHM =  os.getenv("ALGORITHM","HS256")
+
+
 app=FastAPI(title="Multi-tenant RAG system")
 
 logger.info("FastAPI application initialized")
@@ -44,7 +58,7 @@ logger.info(f"Using algorithm: {ALGORITHM}, Token expiration: {ACCESS_TOKEN_EXPI
 # allow requests from the React dev server during development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3001","*"],
+    allow_origins=["http://localhost:3001"],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -86,25 +100,26 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    username = None
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
+        username = payload.get("sub")
         logger.debug(f"Token decoded for username: {username}")
         if username is None:
             logger.warning("Token validation failed: Invalid username in token")
             db_utils.log_user_event(db, username,"login_failure", "Invalid username")
-            LOGIN_ATTEMPTS.labels(status="failed").inc()
+            LOGIN_ATTEMPTS.labels(status="failed",role="unknown").inc()
             raise credentials_exception
     except JWTError as e:
         logger.error(f"JWT decode error: {str(e)}")
-        db_utils.log_user_event(db, username,"token_expire", "Invalid Token")
-        LOGIN_ATTEMPTS.labels(status="failed").inc()
+        db_utils.log_user_event(db, username,"token_error", str(e))
+        LOGIN_ATTEMPTS.labels(status="failed",role="unknown").inc()
         raise credentials_exception
     user = db_utils.get_user(db, username)
     if user is None:
         logger.warning(f"User not found in database: {username}")
         db_utils.log_user_event(db, username,"login_failure", "Invalid username")
-        LOGIN_ATTEMPTS.labels(status="failed").inc()
+        LOGIN_ATTEMPTS.labels(status="failed",role="unknown").inc()
         raise credentials_exception
     logger.debug(f"User authenticated: {username} (role: {user.role})")
     return user
@@ -155,7 +170,7 @@ async def metrics_middleware(request,call_next):
     response=await call_next(request)
     latency=time.time()-start
     REQUEST_COUNT.labels(method=request.method,endpoint=request.url.path).inc()
-    REQUEST_LATENCY.observe(latency)
+    REQUEST_LATENCY.labels(endpoint=request.url.path).observe(latency)
     logger.debug(f"{request.method} {request.url.path} - Status: {response.status_code} - Latency: {latency:.3f}s")
     return response
 
@@ -335,6 +350,190 @@ def delete_user(org_id: str, username: str, current_user: db_models.User = Depen
     logger.info(f"User deleted successfully - Username: {username}, Org: {org_id}")
     return {"deleted": username}
 
+# ── Knowledge Base Document Management ──────────────────────────────────────
+
+def _require_editor_in_org(current_user: db_models.User, org_id: str):
+    """Raise 403 unless the user is an editor (or admin) for the given org."""
+    if current_user.role == "admin":
+        return
+    if current_user.role == "editor" and current_user.org_id == org_id:
+        return
+    raise HTTPException(status_code=403, detail="Only editors of this organization can manage documents")
+
+
+def _log_kb_action(db: Session, action: str, org_id: str, performed_by: str, doc_id: str = None, details: str = ""):
+    record = db_models.KnowledgeBaseAuditLog(
+        action=action, doc_id=doc_id, org_id=org_id,
+        performed_by=performed_by, details=details
+    )
+    db.add(record)
+    db.commit()
+
+
+@app.post("/orgs/{org_id}/documents", status_code=201)
+async def upload_document(
+    org_id: str = Path(...),
+    file: UploadFile = File(...),
+    current_user: db_models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Upload a document to the organization's knowledge base. Editors only."""
+    _require_editor_in_org(current_user, org_id)
+
+    if not db.query(db_models.Organization).filter(db_models.Organization.org_id == org_id).first():
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    allowed_extensions = {".pdf", ".txt", ".doc", ".docx", ".csv", ".xlsx", ".xls"}
+    _, ext = os.path.splitext(file.filename)
+    if ext.lower() not in allowed_extensions:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
+
+    # Save to a persistent location — the Celery worker reads it after this request returns
+    TMP_DIR = os.getenv("TMP_PATH", "./backend/tmp_files")
+    os.makedirs(TMP_DIR, exist_ok=True)
+    tmp_path = os.path.join(TMP_DIR, f"{uuid.uuid4()}{ext}")
+    with open(tmp_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+    logger.info(f"Document saved at {tmp_path}")
+
+    try:
+        logger.info(f"Adding document to ingestion queue for org={org_id}")
+
+        # Get file size for metrics
+        file.file.seek(0, 2)  # Seek to end
+        file_size = file.file.tell()
+        file.file.seek(0)  # Reset to beginning
+
+        # Pass all args positionally — Celery serializes args/kwargs separately
+        task = ingest_document.apply_async(
+            args=[org_id, tmp_path, {"org_id": org_id, "filename": file.filename, "performed_by": current_user.username}],
+            queue="ingestion_queue",
+        )
+        logger.info(f"Document queued with task_id={task.id}")
+
+        # Persist a pending DocumentRecord now; the worker will have the real doc_id
+        record = db_models.DocumentRecord(
+            doc_id=task.id,
+            org_id=org_id,
+            filename=file.filename,
+            uploaded_by=current_user.username,
+        )
+        db.add(record)
+        db.commit()
+        _log_kb_action(db, "document_added", org_id, current_user.username, task.id, f"Queued: {file.filename}")
+
+        # Record metrics
+        increment_document_upload(org_id, "queued")
+        observe_document_size(org_id, file_size)
+
+        return {"status": "queued", "task_id": task.id, "filename": file.filename}
+    except Exception as e:
+        # Clean up temp file if queuing itself failed
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        logger.error(f"Failed to queue document: {e}")
+        increment_document_upload(org_id, "failed")
+        raise HTTPException(status_code=500, detail=f"Failed to queue document: {str(e)}")
+
+
+@app.get("/orgs/{org_id}/documents")
+def list_documents(
+    org_id: str = Path(...),
+    current_user: db_models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List all active documents in the organization's knowledge base. Editors only."""
+    _require_editor_in_org(current_user, org_id)
+
+    docs = (
+        db.query(db_models.DocumentRecord)
+        .filter(db_models.DocumentRecord.org_id == org_id, db_models.DocumentRecord.is_deleted == False)
+        .all()
+    )
+    return {
+        "documents": [
+            {
+                "doc_id": d.doc_id,
+                "filename": d.filename,
+                "uploaded_by": d.uploaded_by,
+                "uploaded_at": d.uploaded_at.isoformat(),
+            }
+            for d in docs
+        ]
+    }
+
+
+@app.delete("/orgs/{org_id}/documents/{doc_id}")
+async def delete_document(
+    org_id: str = Path(...),
+    doc_id: str = Path(...),
+    current_user: db_models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete a document from the organization's knowledge base. Editors only."""
+    _require_editor_in_org(current_user, org_id)
+
+    record = (
+        db.query(db_models.DocumentRecord)
+        .filter(db_models.DocumentRecord.doc_id == doc_id, db_models.DocumentRecord.org_id == org_id)
+        .first()
+    )
+    if not record or record.is_deleted:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    try:
+        response = await call_mcp_tool(
+            "del_org_document",
+            {
+                "org_id": org_id,
+                "document_id": doc_id
+            }
+        )
+        logger.info(f"Document deletion status response: {response}")
+        record.is_deleted = json.loads(response.content[0].text)["deleted"]
+        db.commit()
+        if not record.is_deleted:
+            raise HTTPException(status_code=500, detail="Failed to delete document from vector DB")
+        _log_kb_action(db, "document_deleted", org_id, current_user.username, doc_id, f"Deleted: {record.filename}")
+        increment_document_deletion(org_id, "success")
+        logger.info(f"Document {doc_id} deleted from org {org_id} by {current_user.username}")
+        return {"deleted": doc_id}
+    except Exception as e:
+        logger.error(f"Document deletion failed for {doc_id}: {e}")
+        increment_document_deletion(org_id, "failed")
+        raise HTTPException(status_code=500, detail=f"Failed to delete document: {str(e)}")
+
+
+@app.get("/orgs/{org_id}/kb-audit-logs")
+def list_kb_audit_logs(
+    org_id: str = Path(...),
+    current_user: db_models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List knowledge base audit logs for the organization. Editors only."""
+    _require_editor_in_org(current_user, org_id)
+
+    logs = (
+        db.query(db_models.KnowledgeBaseAuditLog)
+        .filter(db_models.KnowledgeBaseAuditLog.org_id == org_id)
+        .order_by(db_models.KnowledgeBaseAuditLog.timestamp.desc())
+        .all()
+    )
+    return {
+        "logs": [
+            {
+                "id": l.id,
+                "action": l.action,
+                "doc_id": l.doc_id,
+                "performed_by": l.performed_by,
+                "timestamp": l.timestamp.isoformat(),
+                "details": l.details,
+            }
+            for l in logs
+        ]
+    }
+
+
 @app.get("/metrics")
 def metrics():
     """
@@ -350,4 +549,13 @@ def metrics():
         Note: Ensure that the Prometheus client library is properly configured to collect and expose the desired metrics throughout the application.
     """
     return Response(generate_latest(),media_type=CONTENT_TYPE_LATEST)
+
+@app.get("/task-status/{task_id}")
+def get_status(task_id:str):
+    task=AsyncResult(task_id)
+    return {
+        "task_id":task_id,
+        "status":task.status,
+        "result":task.result
+    }
 
