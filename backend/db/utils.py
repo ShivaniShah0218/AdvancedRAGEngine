@@ -164,9 +164,11 @@ def log_user_event(db: Session, username: str, event_type: str, details: str = "
     """
     try:
         logger.info(f"User event - Username: {username}, Event: {event_type}, Details: {details}")
-        record = UserLoginLog(username=username,event=event_type,timestamp=datetime.utcnow(),details=details,)
+        record = db_models.UserLoginLog(username=username,event=event_type,timestamp=datetime.utcnow(),details=details,)
         db.add(record)
         db.commit()
+        logger.debug(f"Logged user event: {record.id}")
+        logger.debug(f"User event logged successfully: {record.id}")
         db.refresh(record)
         return record
     except Exception as e:

@@ -35,3 +35,23 @@ export async function listUsers(org_id) {
 export async function deleteUser(org_id, username) {
   return (await axios.delete(`${API_BASE}/orgs/${encodeURIComponent(org_id)}/users/${encodeURIComponent(username)}`)).data;
 }
+
+export async function listDocuments(org_id) {
+  return (await axios.get(`${API_BASE}/orgs/${encodeURIComponent(org_id)}/documents`)).data;
+}
+
+export async function uploadDocument(org_id, file) {
+  const formData = new FormData();
+  formData.append("file", file);
+  return (await axios.post(`${API_BASE}/orgs/${encodeURIComponent(org_id)}/documents`, formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  })).data;
+}
+
+export async function deleteDocument(org_id, doc_id) {
+  return (await axios.delete(`${API_BASE}/orgs/${encodeURIComponent(org_id)}/documents/${encodeURIComponent(doc_id)}`)).data;
+}
+
+export async function listKBAuditLogs(org_id) {
+  return (await axios.get(`${API_BASE}/orgs/${encodeURIComponent(org_id)}/kb-audit-logs`)).data;
+}

@@ -19,14 +19,19 @@ mlflow
 python-dotenv
 sqlalchemy
 passlib==1.7.4
-bcrypt==3.2.2
+bcrypt==4.0.1
 python-multipart
 prometheus-client
-fastapi
-uvicorn
 python-jose
-
-
+mcp
+fastmcp
+celery
+redis
+httpx
+langchain-community
+langchain_text_splitters
+langchain
+unstructured[local-inference]
 
 
 
