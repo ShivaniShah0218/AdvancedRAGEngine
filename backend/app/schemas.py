@@ -65,3 +65,19 @@ class UserCreate(BaseModel):
     username: str = Field(...,pattern=r"^[A-Za-z0-9_\-]+$")
     password: str
     role: str = Field(...,pattern=r"^(viewer|editor|admin)$")
+
+class DocumentResponse(BaseModel):
+    doc_id: str
+    filename: str
+    uploaded_by: str
+    uploaded_at: str
+    is_deleted: bool
+
+class KBAuditLogResponse(BaseModel):
+    id: int
+    action: str
+    doc_id: Optional[str]
+    org_id: str
+    performed_by: str
+    timestamp: str
+    details: Optional[str]

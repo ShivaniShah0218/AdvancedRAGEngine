@@ -3,6 +3,7 @@ import { listOrgs } from '../api';
 import CreateOrgModal from './CreateOrgModal';
 import CreateUserModal from './CreateUserModal';
 import UserManagementModal from './UserManagementModal';
+import KnowledgeBaseModal from './KnowledgeBaseModal';
 import '../styles/Dashboard.css';
 
 export default function Dashboard({ user }) {
@@ -13,6 +14,7 @@ export default function Dashboard({ user }) {
   const [showCreateOrgModal, setShowCreateOrgModal] = useState(false);
   const [showCreateUserModal, setShowCreateUserModal] = useState(false);
   const [showUserManagementModal, setShowUserManagementModal] = useState(false);
+  const [showKnowledgeBaseModal, setShowKnowledgeBaseModal] = useState(false);
   const [selectedOrgId, setSelectedOrgId] = useState('');
 
   useEffect(() => {
@@ -53,6 +55,11 @@ export default function Dashboard({ user }) {
   const handleUserManagementClick = (orgId) => {
     setSelectedOrgId(orgId);
     setShowUserManagementModal(true);
+  };
+
+  const handleKnowledgeBaseClick = (orgId) => {
+    setSelectedOrgId(orgId);
+    setShowKnowledgeBaseModal(true);
   };
 
   const isAdmin = user?.role === 'admin';
@@ -119,6 +126,15 @@ export default function Dashboard({ user }) {
                           >
                             👥 Users
                           </button>
+                          {isEditor && (
+                            <button
+                              className="btn-small btn-kb"
+                              onClick={() => handleKnowledgeBaseClick(org.org_id)}
+                              title="Manage knowledge base"
+                            >
+                              📚 Knowledge Base
+                            </button>
+                          )}
                         </>
                       )}
                     </div>
@@ -169,6 +185,12 @@ export default function Dashboard({ user }) {
         onClose={() => setShowUserManagementModal(false)}
         orgId={selectedOrgId}
         onUserDeleted={() => fetchOrgs()}
+      />
+
+      <KnowledgeBaseModal
+        isOpen={showKnowledgeBaseModal}
+        onClose={() => setShowKnowledgeBaseModal(false)}
+        orgId={selectedOrgId}
       />
     </div>
   );

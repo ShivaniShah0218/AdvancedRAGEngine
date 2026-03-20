@@ -8,8 +8,10 @@
   - Relationships: Organization has many Users, User belongs to an Organization
   - Each model includes an __init__ method for easy instantiation and logging of model creation
   - The UserLoginLog model allows for detailed tracking of authentication events, which can be crucial for security auditing and monitoring user activity.
-
-"""
+  - DocumentRecord model: tracks documents added to an organization's knowledge base (doc_id, org_id, filename, uploaded_by, uploaded_at, is_deleted, job_id, status, error_message)
+  - KnowledgeBaseAuditLog model: records audit log entries for knowledge base actions (id, action, doc_id, org_id, performed_by, timestamp, details)
+  
+  """
 from datetime import datetime
 from sqlalchemy import Column, String, Text, DateTime, Integer, Enum as SQLEnum, ForeignKey, Boolean
 from sqlalchemy.orm import relationship
@@ -101,6 +103,61 @@ class User(Base):
         self.role = role
         self.org_id = org_id
         logger.debug(f"User model instantiated: {username} (role: {role}, org: {org_id})")
+
+class DocumentRecord(Base):
+    """
+    Tracks documents added to an organization's knowledge base.
+    - doc_id: unique document identifier (UUID)
+    - org_id: the organization this document belongs to
+    - filename: original filename of the uploaded document
+    - uploaded_by: username of the editor who uploaded it
+    - uploaded_at: timestamp of upload
+    - is_deleted: soft-delete flag
+    """
+    __tablename__ = "document_records"
+    doc_id = Column(String, primary_key=True, index=True)
+    org_id = Column(String, ForeignKey("organizations.org_id"), nullable=False, index=True)
+    filename = Column(String, nullable=False)
+    uploaded_by = Column(String, ForeignKey("users.username"), nullable=False)
+    uploaded_at = Column(DateTime, default=datetime.utcnow)
+    is_deleted = Column(Boolean, default=False)
+    # Celery job tracking
+    job_id = Column(String, nullable=True, index=True)
+    status = Column(String, default="pending")  # pending | processing | done | failed
+    error_message = Column(Text, nullable=True)
+
+    organization = relationship("Organization")
+    uploader = relationship("User", foreign_keys=[uploaded_by])
+
+    def __init__(self, doc_id, org_id, filename, uploaded_by, job_id=None):
+        self.doc_id = doc_id
+        self.org_id = org_id
+        self.filename = filename
+        self.uploaded_by = uploaded_by
+        self.job_id = job_id
+        self.status = "pending"
+        logger.debug(f"DocumentRecord instantiated: {doc_id} for org {org_id}")
+
+
+class KnowledgeBaseAuditLog(Base):
+    """
+    Audit log for knowledge base actions performed by editors.
+    - action: 'document_added', 'document_deleted'
+    - doc_id: the document involved
+    - org_id: the organization
+    - performed_by: username of the editor
+    - timestamp: when the action occurred
+    - details: optional extra context
+    """
+    __tablename__ = "kb_audit_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    action = Column(String, nullable=False, index=True)
+    doc_id = Column(String, nullable=True)
+    org_id = Column(String, nullable=False, index=True)
+    performed_by = Column(String, nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
+    details = Column(Text, nullable=True)
+
 
 class UserLoginLog(Base):
     """
