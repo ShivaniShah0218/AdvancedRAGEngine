@@ -1,14 +1,18 @@
-﻿"""
-Run initialization then start the FastAPI app (uvicorn).
+"""
+Run initialization then start the FastAPI app (uvicorn) and MCP servers.
 
 Usage (from project root):
   python -m backend.run_server         # default host 0.0.0.0 port 8000
   python -m backend.run_server --reload
   python -m backend.run_server --host 127.0.0.1 --port 8001
+
+MCP servers run on ports 8001 (document manager), 8002 (guardrails), and 8003 (RAG pipeline).
 """
 import os
 import sys
 import argparse
+import threading
+import time
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -36,6 +40,10 @@ debug_mode = os.getenv("DEBUG", "false").lower() == "true"
 database_url = os.getenv("DATABASE_URL", "sqlite:///./rag_user_auth.db")
 api_host = os.getenv("API_HOST", "0.0.0.0")
 api_port = int(os.getenv("API_PORT", 8000))
+mcp_host = os.getenv("MCP_HOST", "localhost")
+mcp_port = int(os.getenv("MCP_PORT", 8001))
+guardrails_mcp_port = int(os.getenv("GUARDRAILS_MCP_PORT", 8002))
+rag_mcp_port = int(os.getenv("RAG_MCP_PORT", 8003))
 
 logger.info(f"Environment: Debug={debug_mode}, Database={database_url}")
 logger.info(f"Project root: {ROOT}")
@@ -68,11 +76,69 @@ def ensure_initialization():
         raise
 
 
+def start_mcp_server():
+    """Start the document manager MCP server in a separate thread."""
+    logger.info("Starting MCP server on http://localhost:8001...")
+    try:
+        from backend.knowledge_database.mcp_server import mcp
+        mcp_thread = threading.Thread(
+            target=mcp.run,
+            kwargs={"transport": "streamable-http", "host": mcp_host, "port": mcp_port},
+            daemon=True
+        )
+        mcp_thread.start()
+        time.sleep(2)
+        logger.info(f"✅ Document MCP server started on http://{mcp_host}:{mcp_port}")
+        return mcp_thread
+    except Exception as e:
+        logger.error(f"❌ Failed to start document MCP server: {str(e)}", exc_info=True)
+        return None
+
+
+def start_guardrails_mcp_server():
+    """Start the guardrails MCP server in a separate thread."""
+    logger.info("Starting Guardrails MCP server on http://localhost:8002...")
+    try:
+        from backend.rag.guardrails.mcp_server import guardrails_mcp
+        guardrails_thread = threading.Thread(
+            target=guardrails_mcp.run,
+            kwargs={"transport": "streamable-http", "host": mcp_host, "port": guardrails_mcp_port},
+            daemon=True
+        )
+        guardrails_thread.start()
+        time.sleep(2)
+        logger.info(f"✅ Guardrails MCP server started on http://{mcp_host}:{guardrails_mcp_port}")
+        return guardrails_thread
+    except Exception as e:
+        logger.error(f"❌ Failed to start guardrails MCP server: {str(e)}", exc_info=True)
+        return None
+
+
+def start_rag_mcp_server():
+    """Start the RAG pipeline MCP server in a separate thread."""
+    logger.info("Starting RAG MCP server on http://localhost:8003...")
+    try:
+        from backend.rag.mcp_server import rag_mcp
+        rag_thread = threading.Thread(
+            target=rag_mcp.run,
+            kwargs={"transport": "streamable-http", "host": mcp_host, "port": rag_mcp_port},
+            daemon=True
+        )
+        rag_thread.start()
+        time.sleep(2)
+        logger.info(f"✅ RAG MCP server started on http://{mcp_host}:{rag_mcp_port}")
+        return rag_thread
+    except Exception as e:
+        logger.error(f"❌ Failed to start RAG MCP server: {str(e)}", exc_info=True)
+        return None
+
+
 def main():
     """
     Main entry point for the server
         - Parses command line arguments for host, port, reload, and workers
         - Runs initialization logic to set up database and default admin user
+        - Starts the MCP server in a separate thread
         - Starts the uvicorn server with the specified configuration
         - Logs important information about the server status and configuration for monitoring and debugging purposes
         - Handles graceful shutdown on keyboard interrupt and logs any exceptions that occur during server startup
@@ -120,18 +186,47 @@ def main():
     # Run initialization
     ensure_initialization()
 
-    #Check for embedding models download
+    logger.info("Loading ensure_model function")
+    from backend.utils.model_download_check import ensure_model
+    # Check for embedding models download
     logger.info(f"Checking for embeddings model")
-    from backend.embedding_model.model_download_check import ensure_model as embedding_model_ensure
-    embedding_model_ensure()
-    logger.info(f"Embeddings model download checked")
+    EMBEDDINGS_MODEL_PATH=os.getenv("EMBEDDINGS_MODEL_PATH","./models")
+    EMBEDDINGS_MODEL=os.getenv("EMBEDDINGS_MODEL")
+    ensure_model(EMBEDDINGS_MODEL_PATH,EMBEDDINGS_MODEL)
+    logger.info(f"Embeddings model {EMBEDDINGS_MODEL} download checked")
 
-    #Check for chromadb persistent storage directory created
+    #  Check for RAG models download
+    logger.info(f"Checking for rag model")
+    RAG_MODEL_PATH=os.getenv("RAG_MODEL_PATH","./models")
+    RAG_MODEL=os.getenv("RAG_MODEL")
+    ensure_model(RAG_MODEL_PATH,RAG_MODEL)
+    logger.info(f"RAG model {RAG_MODEL} download checked")
+
+    #  Check for cross encoder models download
+    logger.info(f"Checking for cross encoder model")
+    CROSS_ENCODER_MODEL_PATH=os.getenv("CROSS_ENCODER_MODEL_PATH","./models")
+    CROSS_ENCODER_MODEL=os.getenv("CROSS_ENCODER_MODEL")
+    ensure_model(CROSS_ENCODER_MODEL_PATH,CROSS_ENCODER_MODEL)
+    logger.info(f"Cross Encoder model {CROSS_ENCODER_MODEL} download checked")
+
+    #  Check for guardrails models download
+    logger.info(f"Checking for guardrail model")
+    GUARDRAILS_MODEL_PATH=os.getenv("GUARDRAILS_MODEL_PATH","./models")
+    GUARDRAILS_MODEL=os.getenv("GUARDRAILS_MODEL")
+    ensure_model(GUARDRAILS_MODEL_PATH,GUARDRAILS_MODEL)
+    logger.info(f"Guardrail model {GUARDRAILS_MODEL} download checked")
+
+    # Check for chromadb persistent storage directory created
     logger.info(f"Checking for Chromadb persistent directory")
     from backend.knowledge_database.chroma_client import initialize_kb_storage
     initialize_kb_storage()    
     logger.info(f"Chromadb persistent directory checked")
-    
+
+    # Start MCP servers
+    mcp_thread = start_mcp_server()
+    guardrails_thread = start_guardrails_mcp_server()
+    rag_thread = start_rag_mcp_server()
+
     logger.info("All pre-start checks passed")
     # Start uvicorn server
     logger.info("Starting Uvicorn server...")
@@ -139,6 +234,23 @@ def main():
     logger.info(f"📖 Documentation: http://{args.host}:{args.port}/docs")
     logger.info(f"📊 Metrics: http://{args.host}:{args.port}/metrics")
     logger.info(f"📁 Logs directory: {Path(__file__).parent / 'logs'}")
+    
+    if mcp_thread:
+        logger.info(f" Document MCP server running on http://{mcp_host}:{mcp_port}")
+    if guardrails_thread:
+        logger.info(f" Guardrails MCP server running on http://{mcp_host}:{guardrails_mcp_port}")
+    if rag_thread:
+        logger.info(f" RAG MCP server running on http://{mcp_host}:{rag_mcp_port}")
+    
+    logger.info("")
+    logger.info("To start the Celery worker, run in a separate terminal:")
+    logger.info("  celery -A backend.worker.celery_worker.celery_app worker -Q ingestion_queue --loglevel=info --pool=threads --concurrency=4")
+    logger.info("")
+    logger.info("MCP servers:")
+    logger.info(f"  Document Manager: http://{mcp_host}:{mcp_port}")
+    logger.info(f"  Guardrails: http://{mcp_host}:{guardrails_mcp_port}")
+    logger.info(f"  RAG Pipeline: http://{mcp_host}:{rag_mcp_port}")
+    logger.info("")
     
     try:
         uvicorn.run(

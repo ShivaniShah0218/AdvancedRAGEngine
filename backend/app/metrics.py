@@ -173,3 +173,46 @@ def observe_embedding_duration(duration: float, chunk_size: str = "default"):
 def increment_kb_audit(action: str, org_id: str):
     """Increment knowledge base audit log counter."""
     KB_AUDIT_LOGS_TOTAL.labels(action=action, org_id=org_id).inc()
+
+# ── RAG Query Metrics ─────────────────────────────────────────────────────────
+RAG_QUERIES_TOTAL = Counter(
+    "rag_queries_total",
+    "Total RAG queries submitted",
+    ["org_id", "status"]
+)
+
+RAG_QUERY_DURATION_SECONDS = Histogram(
+    "rag_query_duration_seconds",
+    "End-to-end RAG pipeline duration",
+    ["org_id"]
+)
+
+RAG_GUARDRAIL_BLOCKS_TOTAL = Counter(
+    "rag_guardrail_blocks_total",
+    "Total queries blocked by guardrails",
+    ["org_id", "stage"]
+)
+
+RAG_RETRIEVAL_CHUNKS = Histogram(
+    "rag_retrieval_chunks",
+    "Number of chunks retrieved per query",
+    ["org_id"]
+)
+
+
+def increment_rag_query(org_id: str, status: str = "submitted"):
+    RAG_QUERIES_TOTAL.labels(org_id=org_id, status=status).inc()
+
+
+def observe_rag_duration(org_id: str, duration: float):
+    if duration >= 0:
+        RAG_QUERY_DURATION_SECONDS.labels(org_id=org_id).observe(duration)
+
+
+def increment_guardrail_block(org_id: str, stage: str):
+    RAG_GUARDRAIL_BLOCKS_TOTAL.labels(org_id=org_id, stage=stage).inc()
+
+
+def observe_retrieval_chunks(org_id: str, count: int):
+    if count >= 0:
+        RAG_RETRIEVAL_CHUNKS.labels(org_id=org_id).observe(count)

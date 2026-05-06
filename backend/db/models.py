@@ -159,9 +159,86 @@ class KnowledgeBaseAuditLog(Base):
     details = Column(Text, nullable=True)
 
 
+class RAGQuery(Base):
+    """
+    Stores RAG queries submitted by users.
+    - query_id: unique identifier (UUID / Celery task id)
+    - org_id: organization scope — queries only search this org's knowledge base
+    - asked_by: username of the user who submitted the query
+    - query_text: the raw question
+    - status: pending | processing | done | failed
+    - answer: generated answer (populated after task completes)
+    - error_message: failure reason if status == failed
+    - created_at / completed_at: timing
+    """
+    __tablename__ = "rag_queries"
+    query_id = Column(String, primary_key=True, index=True)
+    org_id = Column(String, ForeignKey("organizations.org_id"), nullable=False, index=True)
+    asked_by = Column(String, ForeignKey("users.username"), nullable=False)
+    query_text = Column(Text, nullable=False)
+    status = Column(String, default="pending", index=True)  # pending|processing|done|failed
+    answer = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+
+    organization = relationship("Organization")
+    user = relationship("User", foreign_keys=[asked_by])
+
+
+class RAGQueryLog(Base):
+    """
+    Detailed step-by-step log for each RAG query execution.
+    - query_id: FK to RAGQuery
+    - step: pipeline step name (retrieval, reranking, generation, evaluation, guardrail_*)
+    - status: success | failed | blocked
+    - details: JSON or text with step-specific data (chunk count, scores, etc.)
+    - duration_ms: how long the step took
+    - timestamp: when the step ran
+    """
+    __tablename__ = "rag_query_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    query_id = Column(String, ForeignKey("rag_queries.query_id"), nullable=False, index=True)
+    step = Column(String, nullable=False)
+    status = Column(String, nullable=False)
+    details = Column(Text, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    query = relationship("RAGQuery")
+
+
+class RAGMetrics(Base):
+    """
+    Aggregated per-query metrics for monitoring and Prometheus export.
+    - query_id: FK to RAGQuery (one-to-one)
+    - org_id: for org-scoped aggregation
+    - retrieval_count: number of chunks retrieved
+    - reranked_count: number of chunks after reranking
+    - rouge1 / rougeL: evaluation scores
+    - total_duration_ms: end-to-end pipeline duration
+    - guardrail_blocked: whether any guardrail blocked the query
+    - recorded_at: when metrics were recorded
+    """
+    __tablename__ = "rag_metrics"
+    id = Column(Integer, primary_key=True, index=True)
+    query_id = Column(String, ForeignKey("rag_queries.query_id"), nullable=False, unique=True, index=True)
+    org_id = Column(String, nullable=False, index=True)
+    retrieval_count = Column(Integer, nullable=True)
+    reranked_count = Column(Integer, nullable=True)
+    rouge1 = Column(String, nullable=True)
+    rougeL = Column(String, nullable=True)
+    total_duration_ms = Column(Integer, nullable=True)
+    guardrail_blocked = Column(Boolean, default=False)
+    recorded_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    query = relationship("RAGQuery")
+
+
 class UserLoginLog(Base):
     """
-    Tracks user authentication-related events for auditing and monitoring.
+    Logs user authentication events.
+    - username: the user involved (can be null for failed logins with invalid username)
     - event: 'login_success', 'login_failure', 'logout', 'token_refresh', etc.
     - timestamp: UTC time of the event
     - details: free-text JSON or string for additional context (e.g. failure reason)

@@ -19,13 +19,17 @@ export default function Login({ onLoginSuccess }) {
       console.log('🔍 Response role:', response.role); // DEBUG
       
       setToken(response.access_token);
-      
-      // Store user data AND token
+
+      // Decode JWT payload to extract org_id (no signature verification needed client-side)
+      const payloadBase64 = response.access_token.split('.')[1];
+      const payload = JSON.parse(atob(payloadBase64));
+
       const userData = {
         username: username,
-        role: response.role // Make sure this exists
+        role: response.role,
+        org_id: payload.org_id || null,
       };
-      console.log('💾 Storing user data:', userData); // DEBUG
+      console.log('💾 Storing user data:', userData);
       
       localStorage.setItem('user', JSON.stringify(userData));
       localStorage.setItem('token', response.access_token);

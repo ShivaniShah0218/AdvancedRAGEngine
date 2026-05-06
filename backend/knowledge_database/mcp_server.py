@@ -40,5 +40,3 @@ def del_org_document(org_id:str, document_id:str):
     return delete_document_embeddings(org_id, document_id)
 
 
-if __name__ == "__main__":
-    mcp.run(transport="streamable-http",host="localhost", port=8001)
