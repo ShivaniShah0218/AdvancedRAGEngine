@@ -4,6 +4,8 @@ prometheus-fastapi-instrumentator
 sentence-transformers
 transformers
 torch
+torchvision
+torchaudio
 chromadb
 guardrails-ai
 rouge-score
@@ -32,7 +34,5 @@ langchain-community
 langchain_text_splitters
 langchain
 unstructured[local-inference]
-
-
 
 

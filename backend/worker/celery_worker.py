@@ -10,6 +10,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Configure logging before creating celery app
+from backend.logging_config import get_logger
+
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 celery_app = Celery(
@@ -22,6 +25,7 @@ celery_app.conf.imports = ["backend.worker.tasks"]
 
 celery_app.conf.task_routes = {
     "backend.worker.tasks.ingest_document": {"queue": "ingestion_queue"},
+    "backend.worker.tasks.process_rag_query": {"queue": "rag_query_queue"},
 }
 
 celery_app.conf.update(

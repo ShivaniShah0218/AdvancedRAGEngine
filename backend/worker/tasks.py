@@ -15,6 +15,8 @@ load_dotenv()
 
 logger = get_logger(__name__)
 
+MCP_URL = os.getenv("MCP_URL")
+
 
 @celery_app.task(name="backend.worker.tasks.ingest_document", bind=True, max_retries=3)
 def ingest_document(self, org_id: str, document_path: str, metadata: dict):
@@ -38,7 +40,7 @@ def ingest_document(self, org_id: str, document_path: str, metadata: dict):
         logger.info(f"Ingesting document for org={org_id}, path={document_path}")
 
         # Call MCP tool to add document
-        result = asyncio.run(call_mcp_tool("add_org_document", {
+        result = asyncio.run(call_mcp_tool(MCP_URL,"add_org_document", {
             "org_id": org_id,
             "document": document_path,
             "metadata": metadata
@@ -95,5 +97,113 @@ def ingest_document(self, org_id: str, document_path: str, metadata: dict):
         session.rollback()
         increment_worker_retries("ingest_document")
         raise self.retry(exc=e, countdown=2 ** self.request.retries)
+    finally:
+        session.close()
+
+
+@celery_app.task(name="backend.worker.tasks.process_rag_query", bind=True, max_retries=2)
+def process_rag_query(self, query_id: str, query_text: str, org_id: str):
+    """
+    Celery task: run the full RAG pipeline for a user query.
+    Updates RAGQuery status, writes step logs to RAGQueryLog, and records RAGMetrics.
+    """
+    from backend.db.database_config import SessionLocal
+    from backend.db import models as db_models
+    from backend.rag.rag_pipeline import rag_pipeline
+    from backend.app.metrics import (
+        increment_rag_query, observe_rag_duration,
+        increment_guardrail_block, observe_retrieval_chunks
+    )
+    from datetime import datetime
+
+    session = SessionLocal()
+    start_time = time.time()
+
+    def _log_step(step: str, status: str, details: str = "", duration_ms: int = None):
+        entry = db_models.RAGQueryLog(
+            query_id=query_id, step=step, status=status,
+            details=details, duration_ms=duration_ms
+        )
+        session.add(entry)
+        session.commit()
+
+    try:
+        # Mark as processing
+        record = session.query(db_models.RAGQuery).filter_by(query_id=query_id).first()
+        if not record:
+            raise Exception(f"RAGQuery {query_id} not found")
+        record.status = "processing"
+        session.commit()
+        logger.info(f"Processing RAG query {query_id} for org={org_id}")
+
+        # Run pipeline
+        result = rag_pipeline(query_text, org_id)
+
+        duration_ms = int((time.time() - start_time) * 1000)
+        guardrail_blocked = "error" in result and "guardrail" in result.get("error", "").lower()
+
+        if "error" in result:
+            record.status = "failed"
+            record.error_message = result["error"]
+            record.completed_at = datetime.utcnow()
+            session.commit()
+            _log_step("pipeline", "failed", result["error"], duration_ms)
+            increment_rag_query(org_id, "failed")
+            if guardrail_blocked:
+                stage = "query" if "query" in result["error"] else "context" if "context" in result["error"] else "response"
+                increment_guardrail_block(org_id, stage)
+            return {"status": "failed", "error": result["error"]}
+
+        # Success — persist answer
+        record.status = "done"
+        record.answer = result.get("answer", "")
+        record.completed_at = datetime.utcnow()
+        session.commit()
+
+        # Write step logs
+        _log_step("retrieval", "success", json.dumps({"count": result.get("retrieved_count")}))
+        _log_step("reranking", "success", json.dumps({"count": result.get("reranked_count")}))
+        _log_step("generation", "success", json.dumps({"answer_length": len(record.answer)}))
+        _log_step("evaluation", "success", json.dumps(result.get("rouge_scores", {})))
+
+        # Write metrics
+        rouge = result.get("rouge_scores") or {}
+        metrics = db_models.RAGMetrics(
+            query_id=query_id,
+            org_id=org_id,
+            retrieval_count=result.get("retrieved_count"),
+            reranked_count=result.get("reranked_count"),
+            rouge1=str(rouge.get("rouge1", "")),
+            rougeL=str(rouge.get("rougeL", "")),
+            total_duration_ms=duration_ms,
+            guardrail_blocked=False,
+        )
+        session.add(metrics)
+        session.commit()
+
+        # Prometheus
+        increment_rag_query(org_id, "success")
+        observe_rag_duration(org_id, time.time() - start_time)
+        observe_retrieval_chunks(org_id, result.get("retrieved_count", 0))
+
+        logger.info(f"RAG query {query_id} completed in {duration_ms}ms")
+        return {"status": "done", "query_id": query_id}
+
+    except Exception as e:
+        duration_ms = int((time.time() - start_time) * 1000)
+        logger.error(f"RAG query {query_id} failed: {e}")
+        session.rollback()
+        try:
+            record = session.query(db_models.RAGQuery).filter_by(query_id=query_id).first()
+            if record:
+                record.status = "failed"
+                record.error_message = str(e)
+                record.completed_at = datetime.utcnow()
+                session.commit()
+            _log_step("pipeline", "error", str(e), duration_ms)
+        except Exception:
+            pass
+        increment_rag_query(org_id, "failed")
+        raise self.retry(exc=e, countdown=5 * (self.request.retries + 1))
     finally:
         session.close()

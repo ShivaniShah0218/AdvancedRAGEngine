@@ -228,3 +228,7 @@ frontend-react/package-lock.json
 frontend-react/package.json
 
 .env
+
+sample_files/
+tmp_files/
+sample_files.py

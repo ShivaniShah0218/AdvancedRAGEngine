@@ -6,7 +6,7 @@ import UserManagementModal from './UserManagementModal';
 import KnowledgeBaseModal from './KnowledgeBaseModal';
 import '../styles/Dashboard.css';
 
-export default function Dashboard({ user }) {
+export default function Dashboard({ user, onNavigate }) {
   const [orgs, setOrgs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -144,6 +144,22 @@ export default function Dashboard({ user }) {
             ) : (
               <p className="empty-state">No organizations found</p>
             )}
+          </div>
+        </div>
+
+        {/* Query Knowledge Base — available to all users */}
+        <div className="dashboard-card query-card">
+          <div className="card-header">
+            <h3>🔍 Query Knowledge Base</h3>
+          </div>
+          <div className="card-body">
+            <p>Ask questions and get answers from your organization's knowledge base.</p>
+            <button
+              className="card-btn query-btn"
+              onClick={() => onNavigate('query')}
+            >
+              Ask a Question
+            </button>
           </div>
         </div>
 
