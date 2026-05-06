@@ -120,24 +120,34 @@ This repository contains an advanced multi-tenant end-to-end Retrieval-Augmented
    redis-server
    ```
 
-6. **Start the Celery worker**:
+6. **Start the MCP server** (in a separate terminal):
    ```bash
-   celery -A backend.worker.celery_worker.celery_app worker -Q ingestion_queue --loglevel=info
+   python -m backend.knowledge_database.document_manager_mcp_server
    ```
 
-7. **Start the FastAPI backend**:
+7. **Start the Celery worker** (in a separate terminal):
+   ```bash
+   # Document ingestion worker
+   celery -A backend.worker.celery_worker.celery_app worker -Q ingestion_queue --loglevel=info --pool=threads --concurrency=4
+
+   # RAG query worker
+   celery -A backend.worker.celery_worker.celery_app worker -Q rag_query_queue --loglevel=info --pool=threads --concurrency=4
+
+   ```
+
+8. **Start the FastAPI backend**:
    ```bash
    python -m backend.run_server
    ```
 
-8. **Start the React frontend**:
+9. **Start the React frontend**:
    ```bash
    cd frontend-react
    npm install
    npm start
    ```
 
-9. **Access the application**:
+10. **Access the application**:
    - Frontend: `http://localhost:3001`
    - Backend API: `http://localhost:8000`
    - API Docs: `http://localhost:8000/docs`

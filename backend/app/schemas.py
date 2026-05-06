@@ -81,3 +81,30 @@ class KBAuditLogResponse(BaseModel):
     performed_by: str
     timestamp: str
     details: Optional[str]
+
+class QuerySubmit(BaseModel):
+    query: str = Field(..., min_length=1, max_length=2000)
+
+class QueryStatusResponse(BaseModel):
+    query_id: str
+    status: str
+    query_text: str
+    answer: Optional[str]
+    error_message: Optional[str]
+    created_at: str
+    completed_at: Optional[str]
+
+class QueryLogEntry(BaseModel):
+    step: str
+    status: str
+    details: Optional[str]
+    duration_ms: Optional[int]
+    timestamp: str
+
+class QueryMetrics(BaseModel):
+    retrieval_count: Optional[int]
+    reranked_count: Optional[int]
+    rouge1: Optional[str]
+    rougeL: Optional[str]
+    total_duration_ms: Optional[int]
+    guardrail_blocked: bool

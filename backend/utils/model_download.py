@@ -1,5 +1,5 @@
 """
- Download the sentence transformer model from Hugging Face and save it to the specified path
+ Download the model from Hugging Face and save it to the specified path
 """
 
 import os
@@ -12,17 +12,17 @@ load_dotenv()
 logger = get_logger(__name__)
 
 
-MODEL_PATH=os.getenv("EMBEDDINGS_MODEL_PATH","./models")
+# MODEL_PATH=os.getenv("EMBEDDINGS_MODEL_PATH","./models")
 
-def download_model():
+def download_model(model_path,model_name):
     """
     Download the sentence transformer model from Hugging Face and save it to the specified path
     
     """
     try:
         logger.info("Downloading model...")
-        model_name = "sentence-transformers/all-MiniLM-L6-v2"
-        local_dir = os.path.abspath(MODEL_PATH)
+        
+        local_dir = os.path.abspath(model_path)
 
         path = snapshot_download(
             repo_id=model_name,

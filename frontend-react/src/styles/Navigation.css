@@ -204,3 +204,34 @@
     width: 100%;
   }
 }
+
+.nav-links {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex: 1;
+  margin-left: 24px;
+}
+
+.nav-link {
+  background: none;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #64748b;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.nav-link:hover {
+  background: #f1f5f9;
+  color: #1e293b;
+}
+
+.nav-link.active {
+  background: #eff6ff;
+  color: #3b82f6;
+  font-weight: 600;
+}

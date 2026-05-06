@@ -31,12 +31,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from .metrics import (
     REQUEST_COUNT, REQUEST_LATENCY, LOGIN_ATTEMPTS,
     increment_document_upload, observe_document_size, increment_document_deletion,
-    increment_kb_audit, increment_embedding_creation, observe_embedding_duration
+    increment_kb_audit, increment_embedding_creation, observe_embedding_duration,
+    increment_rag_query, observe_rag_duration
 )
 from backend.app import schemas
 from backend.logging_config import get_logger
 from backend.worker.celery_worker import celery_app  # noqa: ensures app is configured before task import
-from backend.worker.tasks import ingest_document
+from backend.worker.tasks import ingest_document, process_rag_query
 from backend.db.database_config import engine,Base, get_db
 from backend.db import models as db_models
 from backend.db import utils as db_utils
@@ -48,6 +49,7 @@ logger = get_logger(__name__)
 SECRET_KEY = os.getenv("JWT_SECRET", "replace-this-secret")
 ACCESS_TOKEN_EXPIRE_SECONDS = int(os.getenv("JWT_EXPIRE_S", 3600))
 ALGORITHM =  os.getenv("ALGORITHM","HS256")
+MCP_URL = os.getenv("MCP_URL")
 
 
 app=FastAPI(title="Multi-tenant RAG system")
@@ -482,7 +484,7 @@ async def delete_document(
         raise HTTPException(status_code=404, detail="Document not found")
 
     try:
-        response = await call_mcp_tool(
+        response = await call_mcp_tool(MCP_URL,
             "del_org_document",
             {
                 "org_id": org_id,
@@ -531,6 +533,154 @@ def list_kb_audit_logs(
             }
             for l in logs
         ]
+    }
+
+
+# ── RAG Query Endpoints ───────────────────────────────────────────────────────
+
+@app.post("/orgs/{org_id}/query", status_code=202)
+def submit_query(
+    org_id: str = Path(...),
+    body: schemas.QuerySubmit = Body(...),
+    current_user: db_models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Submit a RAG query against the org's knowledge base. All roles allowed."""
+    # Scope check — user must belong to this org (admin can query any)
+    if current_user.role != "admin" and current_user.org_id != org_id:
+        raise HTTPException(status_code=403, detail="Access denied to this organization")
+
+    if not db.query(db_models.Organization).filter(db_models.Organization.org_id == org_id).first():
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    query_id = str(uuid.uuid4())
+    record = db_models.RAGQuery(
+        query_id=query_id,
+        org_id=org_id,
+        asked_by=current_user.username,
+        query_text=body.query,
+        status="pending",
+    )
+    db.add(record)
+    db.commit()
+
+    process_rag_query.apply_async(
+        args=[query_id, body.query, org_id],
+        queue="rag_query_queue",
+    )
+    increment_rag_query(org_id, "submitted")
+    logger.info(f"RAG query {query_id} queued for org={org_id} by {current_user.username}")
+    return {"query_id": query_id, "status": "pending"}
+
+
+@app.get("/orgs/{org_id}/query/{query_id}")
+def get_query_result(
+    org_id: str = Path(...),
+    query_id: str = Path(...),
+    current_user: db_models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Poll the status and result of a submitted RAG query."""
+    if current_user.role != "admin" and current_user.org_id != org_id:
+        raise HTTPException(status_code=403, detail="Access denied to this organization")
+
+    record = db.query(db_models.RAGQuery).filter_by(query_id=query_id, org_id=org_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Query not found")
+
+    return {
+        "query_id": record.query_id,
+        "status": record.status,
+        "query_text": record.query_text,
+        "answer": record.answer,
+        "error_message": record.error_message,
+        "created_at": record.created_at.isoformat(),
+        "completed_at": record.completed_at.isoformat() if record.completed_at else None,
+    }
+
+
+@app.get("/orgs/{org_id}/queries")
+def list_queries(
+    org_id: str = Path(...),
+    current_user: db_models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List all RAG queries for the organization, scoped to the current user unless admin."""
+    if current_user.role != "admin" and current_user.org_id != org_id:
+        raise HTTPException(status_code=403, detail="Access denied to this organization")
+
+    q = db.query(db_models.RAGQuery).filter_by(org_id=org_id)
+    # Non-admins only see their own queries
+    if current_user.role != "admin":
+        q = q.filter_by(asked_by=current_user.username)
+    records = q.order_by(db_models.RAGQuery.created_at.desc()).limit(50).all()
+
+    return {
+        "queries": [
+            {
+                "query_id": r.query_id,
+                "query_text": r.query_text,
+                "status": r.status,
+                "answer": r.answer,
+                "created_at": r.created_at.isoformat(),
+                "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+            }
+            for r in records
+        ]
+    }
+
+
+@app.get("/orgs/{org_id}/query/{query_id}/logs")
+def get_query_logs(
+    org_id: str = Path(...),
+    query_id: str = Path(...),
+    current_user: db_models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get step-by-step execution logs for a RAG query. Editors and admins only."""
+    if current_user.role not in ("admin", "editor"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    if current_user.role != "admin" and current_user.org_id != org_id:
+        raise HTTPException(status_code=403, detail="Access denied to this organization")
+
+    logs = db.query(db_models.RAGQueryLog).filter_by(query_id=query_id).order_by(db_models.RAGQueryLog.timestamp).all()
+    return {
+        "logs": [
+            {
+                "step": l.step,
+                "status": l.status,
+                "details": l.details,
+                "duration_ms": l.duration_ms,
+                "timestamp": l.timestamp.isoformat(),
+            }
+            for l in logs
+        ]
+    }
+
+
+@app.get("/orgs/{org_id}/query/{query_id}/metrics")
+def get_query_metrics(
+    org_id: str = Path(...),
+    query_id: str = Path(...),
+    current_user: db_models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get metrics for a specific RAG query."""
+    if current_user.role != "admin" and current_user.org_id != org_id:
+        raise HTTPException(status_code=403, detail="Access denied to this organization")
+
+    m = db.query(db_models.RAGMetrics).filter_by(query_id=query_id).first()
+    if not m:
+        raise HTTPException(status_code=404, detail="Metrics not found")
+
+    return {
+        "retrieval_count": m.retrieval_count,
+        "reranked_count": m.reranked_count,
+        "rouge1": m.rouge1,
+        "rougeL": m.rougeL,
+        "total_duration_ms": m.total_duration_ms,
+        "guardrail_blocked": m.guardrail_blocked,
+        "recorded_at": m.recorded_at.isoformat(),
     }
 
 

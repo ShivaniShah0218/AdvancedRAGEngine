@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { setToken } from '../api';
 import '../styles/Navigation.css';
 
-export default function Navigation({ user, onLogout }) {
+export default function Navigation({ user, onLogout, page, onNavigate }) {
   const [menuOpen, setMenuOpen] = useState(false);
 
   const handleLogout = () => {
@@ -13,6 +13,11 @@ export default function Navigation({ user, onLogout }) {
     setMenuOpen(false);
   };
 
+  const navTo = (p) => {
+    onNavigate(p);
+    setMenuOpen(false);
+  };
+
   return (
     <nav className="navbar">
       <div className="nav-container">
@@ -20,7 +25,25 @@ export default function Navigation({ user, onLogout }) {
           <h2>RAG Engine</h2>
         </div>
 
-        <button 
+        <div className="nav-links">
+          <button
+            className={`nav-link ${page === 'dashboard' ? 'active' : ''}`}
+            onClick={() => navTo('dashboard')}
+          >
+            Dashboard
+          </button>
+          {/* Query page available to all roles that belong to an org */}
+          {user?.org_id && (
+            <button
+              className={`nav-link ${page === 'query' ? 'active' : ''}`}
+              onClick={() => navTo('query')}
+            >
+              Query
+            </button>
+          )}
+        </div>
+
+        <button
           className="nav-toggle"
           onClick={() => setMenuOpen(!menuOpen)}
         >
@@ -35,10 +58,7 @@ export default function Navigation({ user, onLogout }) {
               <span className="username">{user?.username}</span>
               <span className={`user-badge ${user?.role}`}>{user?.role}</span>
             </span>
-            <button 
-              onClick={handleLogout}
-              className="logout-btn"
-            >
+            <button onClick={handleLogout} className="logout-btn">
               Logout
             </button>
           </div>

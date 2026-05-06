@@ -55,3 +55,23 @@ export async function deleteDocument(org_id, doc_id) {
 export async function listKBAuditLogs(org_id) {
   return (await axios.get(`${API_BASE}/orgs/${encodeURIComponent(org_id)}/kb-audit-logs`)).data;
 }
+
+export async function submitQuery(org_id, query) {
+  return (await axios.post(`${API_BASE}/orgs/${encodeURIComponent(org_id)}/query`, { query })).data;
+}
+
+export async function getQueryResult(org_id, query_id) {
+  return (await axios.get(`${API_BASE}/orgs/${encodeURIComponent(org_id)}/query/${encodeURIComponent(query_id)}`)).data;
+}
+
+export async function listQueries(org_id) {
+  return (await axios.get(`${API_BASE}/orgs/${encodeURIComponent(org_id)}/queries`)).data;
+}
+
+export async function getQueryLogs(org_id, query_id) {
+  return (await axios.get(`${API_BASE}/orgs/${encodeURIComponent(org_id)}/query/${encodeURIComponent(query_id)}/logs`)).data;
+}
+
+export async function getQueryMetrics(org_id, query_id) {
+  return (await axios.get(`${API_BASE}/orgs/${encodeURIComponent(org_id)}/query/${encodeURIComponent(query_id)}/metrics`)).data;
+}

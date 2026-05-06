@@ -259,3 +259,13 @@
 .btn-kb:hover {
   background: #ddd6fe;
 }
+
+.query-btn {
+  background: #7c3aed;
+  color: white;
+  border: none;
+}
+
+.query-btn:hover {
+  background: #6d28d9;
+}
