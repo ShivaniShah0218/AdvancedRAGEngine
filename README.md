@@ -25,9 +25,9 @@ This repository contains an advanced multi-tenant end-to-end Retrieval-Augmented
 - **Async Tasks**: Celery with Redis broker
 - **Frontend**: React.js, HTML, CSS, JavaScript
 - **Monitoring**: Prometheus, Grafana
-- **Embeddings**: SentenceTransformers (all-MiniLM-L6-v2)
+- **Embeddings**: SentenceTransformers
 - **Reranking**: CrossEncoder models
-- **LLM**: AutoModelForCausalLM (e.g., Llama, Mistral)
+- **LLM**: AutoModelForCausalLM
 - **Evaluation**: ROUGE metrics
 - **Guardrails**: NLI models, zero-shot classification
 - **MCP**: Model Context Protocol for distributed services
